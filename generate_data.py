@@ -37,8 +37,8 @@ CONCURRENCY = int(os.getenv("CONCURRENCY", "100"))  # 异步并发对局数
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.15"))  # Softmax 采样温度
 
 os.makedirs(DATA_DIR, exist_ok=True)
-SFT_DATA_PATH = os.path.join(DATA_DIR, "sft_data.jsonl")
-RL_REWARD_PATH = os.path.join(DATA_DIR, "rl_rewards.json")
+SFT_DATA_PATH = os.getenv("SFT_DATA_PATH", os.path.join(DATA_DIR, "sft_data.jsonl"))
+RL_REWARD_PATH = os.getenv("RL_REWARD_PATH", os.path.join(DATA_DIR, "rl_rewards.json"))
 
 logging.basicConfig(
     level=logging.INFO,
