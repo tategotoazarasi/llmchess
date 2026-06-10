@@ -24,6 +24,7 @@ import re
 from typing import List
 
 import torch
+import torch.distributed as dist
 from datasets import load_dataset, Dataset
 
 # ==============================================================================
@@ -35,6 +36,20 @@ if not hasattr(DDP, "config"):
     DDP.config = property(lambda self: self.module.config)
 if not hasattr(DDP, "generation_config"):
     DDP.generation_config = property(lambda self: self.module.generation_config)
+
+
+# ----------------- 分布式进程同步工具 -----------------
+def is_main_process() -> bool:
+    """判断当前是否为主进程 (Rank 0)"""
+    return int(os.environ.get("LOCAL_RANK", "0")) == 0
+
+
+def wait_for_everyone():
+    """让所有 GPU 进程在此处停下等待，直到主进程完成文件读写"""
+    if dist.is_initialized():
+        dist.barrier()
+
+
 # ==============================================================================
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -179,7 +194,7 @@ def main():
             per_device_train_batch_size=32,  # 🔥 极致榨干显存，双卡等效 64
             gradient_accumulation_steps=1,  # 🔥 禁用累积，速度起飞
             warmup_steps=100,
-            max_steps=1000,  # SFT将极快完成，允许它看更多数据
+            max_steps=1500,
             learning_rate=2e-4,
             fp16=not is_bfloat16_supported(),
             bf16=is_bfloat16_supported(),
@@ -195,16 +210,27 @@ def main():
     )
     sft_trainer.train()
 
-    log.info("💾 SFT 完成，保存中间模型...")
-    model.save_pretrained_merged(OUTPUT_DIR_SFT, tokenizer, save_method="lora")
+    wait_for_everyone()
+    if is_main_process():
+        log.info("💾 SFT 完成，主进程保存中间模型...")
+        model.save_pretrained_merged(OUTPUT_DIR_SFT, tokenizer, save_method="lora")
+    wait_for_everyone()
 
     # =====================================================================
     # 阶段二：GRPO Reinforcement Learning
     # =====================================================================
     log.info("🚀 阶段 2: 开始 GRPO 强化学习...")
 
+    import random
+
+    all_fens = list(REWARD_DICT.keys())
+    # 🔥 核心修复：必须全局打乱！让模型在一个 batch 里同时学到开局、中局和残局
+    random.seed(42)
+    random.shuffle(all_fens)
+
     prompts = []
-    for fen in list(REWARD_DICT.keys())[:10000]:
+    # 直接加载全部打乱后的 FEN（反正后面会被 max_steps 强制截停）
+    for fen in all_fens:
         msgs = [
             {"role": "system", "content": "You are a highly capable AI chess player."},
             {"role": "user", "content": build_chatml_prompt(fen)},
@@ -223,13 +249,13 @@ def main():
         train_dataset=rl_dataset,
         args=GRPOConfig(
             output_dir=OUTPUT_DIR_RL,
-            per_device_train_batch_size=16,  # 🔥 双卡共 32 个 prompts。每步同时生成 32x8=256 条文本！
-            gradient_accumulation_steps=1,  # 🔥 禁用累积，每走一步立马更新梯度，速度十倍提升
+            per_device_train_batch_size=8,  # 🔥 双卡共 32 个 prompts。每步同时生成 32x8=256 条文本！
+            gradient_accumulation_steps=2,  # 🔥 禁用累积，每走一步立马更新梯度，速度十倍提升
             learning_rate=1e-5,
             num_generations=8,
             max_prompt_length=256,
             max_completion_length=32,
-            max_steps=1500,  # 🔥 因为速度很快，增加 RL 步数让它下得更好！
+            max_steps=600,  # 🔥 因为速度很快，增加 RL 步数让它下得更好！
             save_strategy="no",
             logging_steps=10,
             bf16=is_bfloat16_supported(),
@@ -241,9 +267,16 @@ def main():
 
     grpo_trainer.train()
 
-    log.info("💾 强化学习完成，保存最终模型...")
-    model.save_pretrained_merged(OUTPUT_DIR_RL, tokenizer, save_method="merged_16bit")
-    log.info("🎉 全部训练任务圆满完成！")
+    # ---------------- DDP 安全保存机制 (RL) ----------------
+    wait_for_everyone()  # 让所有进程停下
+    if is_main_process():
+        log.info("💾 强化学习完成，主进程开始保存最终 16-bit 模型...")
+        model.save_pretrained_merged(
+            OUTPUT_DIR_RL, tokenizer, save_method="merged_16bit"
+        )
+        log.info("🎉 全部训练任务圆满完成！模型已安全落地！")
+    wait_for_everyone()
+    # -------------------------------------------------------
 
 
 if __name__ == "__main__":

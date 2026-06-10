@@ -2,7 +2,7 @@
 #SBATCH --job-name=qwen_chess_train
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gres=gpu:2
+#SBATCH --gres=gpu:3
 #SBATCH --time=24:00:00
 #SBATCH --partition=gpu-a100-lowbig
 #SBATCH --output=logs_train_%j.log
@@ -19,4 +19,4 @@ source ~/scratch/llmchess/bin/activate
 export HF_HOME="/users/sgzwa126/.cache/huggingface"
 
 echo "Starting Unsloth Training Pipeline..."
-torchrun --nproc_per_node=2 train_qwen.py
+torchrun --nproc_per_node=3 train_qwen.py
