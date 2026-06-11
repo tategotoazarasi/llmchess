@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:1
 #SBATCH --time=12:00:00
-#SBATCH --partition=gpu-l40s
+#SBATCH --partition=gpu-l40s-low
 #SBATCH --output=logs_serve_%j.log
 
 module purge
